@@ -1,6 +1,6 @@
 import { defineStore } from 'pinia'
 import { ref, computed } from 'vue'
-import type { NFA, MatchResult, MatchStep, RegexTemplate, ASTNode } from '../types'
+import type { NFA, MatchResult, MatchStep, RegexTemplate, ASTNode, BatchTestItem, BatchTestResult, BatchGroupStat } from '../types'
 
 const GROUP_COLORS = ['#ef4444', '#f97316', '#eab308', '#22c55e', '#3b82f6', '#8b5cf6', '#ec4899', '#14b8a6']
 
@@ -391,6 +391,22 @@ export function parseAST(pattern: string): ASTNode {
   return parseOr()
 }
 
+function parseBatchInput(input: string): { text: string; expected: boolean | null }[] {
+  const items: { text: string; expected: boolean | null }[] = []
+  const lines = input.split('\n')
+  for (const raw of lines) {
+    const line = raw.trim()
+    if (!line) continue
+    let expected: boolean | null = null
+    let text = line
+    if (line.startsWith('+ ')) { expected = true; text = line.substring(2).trim() }
+    else if (line.startsWith('- ')) { expected = false; text = line.substring(2).trim() }
+    if (!text) continue
+    items.push({ text, expected })
+  }
+  return items
+}
+
 export const useRegexStore = defineStore('regex', () => {
   const pattern = ref('^([a-zA-Z0-9._%+-]+)@([a-zA-Z0-9.-]+)\\.([a-zA-Z]{2,})$')
   const testString = ref('user@example.com admin@mail.org invalid-email')
@@ -401,6 +417,8 @@ export const useRegexStore = defineStore('regex', () => {
   const ast = ref<ASTNode | null>(null)
   const error = ref('')
   const selectedTemplate = ref<string>('')
+  const batchInput = ref('+ user@example.com\n+ admin@mail.org\n+ test.user+tag@sub.domain.co.uk\n- invalid-email\n- @no-user.com\n- missing@tld')
+  const batchResult = ref<BatchTestResult | null>(null)
 
   const groupColors = GROUP_COLORS
 
@@ -449,6 +467,142 @@ export const useRegexStore = defineStore('regex', () => {
     execute()
   }
 
+  function runBatch() {
+    error.value = ''
+    try {
+      const built = buildNFA(pattern.value)
+      const parsed = parseBatchInput(batchInput.value)
+      const items: BatchTestItem[] = parsed.map((p, i) => {
+        const result = runMatch(built.states, built.startState, p.text)
+        return {
+          id: i,
+          text: p.text,
+          expected: p.expected,
+          matched: result.matched,
+          matchText: result.matchText,
+          groups: result.groups,
+          duration: result.duration
+        }
+      })
+      const total = items.length
+      const matchedCount = items.filter(i => i.matched).length
+      const unmatchedCount = total - matchedCount
+      const hasExpectations = items.some(i => i.expected !== null)
+
+      const matchedExpected = items.filter(i => i.expected === true && i.matched === true)
+      const matchedUnexpected = items.filter(i => i.expected === false && i.matched === true)
+      const unmatchedExpected = items.filter(i => i.expected === true && i.matched === false)
+      const unmatchedUnexpected = items.filter(i => i.expected === false && i.matched === false)
+      const noExpectationMatched = items.filter(i => i.expected === null && i.matched === true)
+      const noExpectationUnmatched = items.filter(i => i.expected === null && i.matched === false)
+
+      const truePositives = matchedExpected.length
+      const trueNegatives = unmatchedUnexpected.length
+      const falsePositiveCount = matchedUnexpected.length
+      const falseNegativeCount = unmatchedExpected.length
+      const falsePositives = matchedUnexpected
+      const falseNegatives = unmatchedExpected
+      const anomalies = [...falsePositives, ...falseNegatives]
+
+      const pct = (n: number, d: number = total) => d > 0 ? Math.round((n / d) * 1000) / 10 : 0
+      const pctSafe = (n: number, d: number) => d > 0 ? Math.round((n / d) * 1000) / 10 : 0
+
+      const groups: BatchGroupStat[] = [
+        { label: '匹配成功', count: matchedCount, percent: pct(matchedCount), color: '#22c55e' },
+        { label: '未匹配', count: unmatchedCount, percent: pct(unmatchedCount), color: '#ef4444' }
+      ]
+
+      const detailedGroups: BatchGroupStat[] = []
+      if (matchedExpected.length > 0) detailedGroups.push({ label: '✓ 正确匹配(TP)', count: truePositives, percent: pct(truePositives), color: '#16a34a' })
+      if (unmatchedUnexpected.length > 0) detailedGroups.push({ label: '✓ 正确未匹配(TN)', count: trueNegatives, percent: pct(trueNegatives), color: '#0891b2' })
+      if (falsePositives.length > 0) detailedGroups.push({ label: '✗ 误匹配(FP)', count: falsePositiveCount, percent: pct(falsePositiveCount), color: '#f97316' })
+      if (falseNegatives.length > 0) detailedGroups.push({ label: '✗ 漏匹配(FN)', count: falseNegativeCount, percent: pct(falseNegativeCount), color: '#dc2626' })
+      if (noExpectationMatched.length > 0) detailedGroups.push({ label: '? 匹配(无预期)', count: noExpectationMatched.length, percent: pct(noExpectationMatched.length), color: '#6366f1' })
+      if (noExpectationUnmatched.length > 0) detailedGroups.push({ label: '? 未匹配(无预期)', count: noExpectationUnmatched.length, percent: pct(noExpectationUnmatched.length), color: '#64748b' })
+
+      const hitRate = pct(matchedCount)
+      const accuracy = pct(total - anomalies.length)
+      const precision = pctSafe(truePositives, truePositives + falsePositiveCount)
+      const recall = pctSafe(truePositives, truePositives + falseNegativeCount)
+      const f1Score = (precision + recall) > 0 ? Math.round((2 * precision * recall / (precision + recall)) * 10) / 10 : 0
+
+      batchResult.value = {
+        items, total, matchedCount, unmatchedCount, hitRate, groups, detailedGroups,
+        anomalies, falsePositives, falseNegatives, hasExpectations, accuracy,
+        precision, recall, f1Score, truePositives, trueNegatives, falsePositiveCount, falseNegativeCount,
+        detailedStats: { matchedExpected, matchedUnexpected, unmatchedExpected, unmatchedUnexpected, noExpectationMatched, noExpectationUnmatched }
+      }
+    } catch (e: any) {
+      error.value = e.message || '正则表达式解析错误'
+      batchResult.value = null
+    }
+  }
+
+  function clearBatch() {
+    batchInput.value = ''
+    batchResult.value = null
+  }
+
+  function exportResultAsJSON() {
+    if (!batchResult.value) return
+    const data = {
+      pattern: pattern.value,
+      exportTime: new Date().toISOString(),
+      summary: {
+        total: batchResult.value.total,
+        matchedCount: batchResult.value.matchedCount,
+        unmatchedCount: batchResult.value.unmatchedCount,
+        hitRate: batchResult.value.hitRate,
+        accuracy: batchResult.value.accuracy,
+        precision: batchResult.value.precision,
+        recall: batchResult.value.recall,
+        f1Score: batchResult.value.f1Score
+      },
+      items: batchResult.value.items
+    }
+    const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' })
+    const url = URL.createObjectURL(blob)
+    const a = document.createElement('a')
+    a.href = url
+    a.download = `regex-regression-${Date.now()}.json`
+    a.click()
+    URL.revokeObjectURL(url)
+  }
+
+  function exportAnomaliesAsText() {
+    if (!batchResult.value || batchResult.value.anomalies.length === 0) return
+    const lines = batchResult.value.anomalies.map(a => {
+      const tag = a.matched ? '- ' : '+ '
+      return tag + a.text
+    })
+    const blob = new Blob([lines.join('\n')], { type: 'text/plain' })
+    const url = URL.createObjectURL(blob)
+    const a = document.createElement('a')
+    a.href = url
+    a.download = `anomalies-${Date.now()}.txt`
+    a.click()
+    URL.revokeObjectURL(url)
+  }
+
+  function copyAnomaliesToClipboard() {
+    if (!batchResult.value || batchResult.value.anomalies.length === 0) return
+    const lines = batchResult.value.anomalies.map(a => {
+      const tag = a.matched ? '- ' : '+ '
+      return tag + a.text
+    })
+    navigator.clipboard.writeText(lines.join('\n'))
+  }
+
+  function appendAnomaliesToInput() {
+    if (!batchResult.value || batchResult.value.anomalies.length === 0) return
+    const lines = batchResult.value.anomalies.map(a => {
+      const tag = a.matched ? '- ' : '+ '
+      return tag + a.text
+    })
+    const current = batchInput.value.trim()
+    batchInput.value = current + (current ? '\n' : '') + lines.join('\n')
+  }
+
   function stepForward() {
     if (matchResult.value && currentStep.value < matchResult.value.steps.length - 1) {
       currentStep.value++
@@ -482,7 +636,9 @@ export const useRegexStore = defineStore('regex', () => {
   return {
     pattern, testString, currentStep, isPlaying, nfa, matchResult, ast, error,
     selectedTemplate, groupColors, matchHighlight,
+    batchInput, batchResult,
     execute, setPattern, setTestString, applyTemplate,
+    runBatch, clearBatch, exportResultAsJSON, exportAnomaliesAsText, copyAnomaliesToClipboard, appendAnomaliesToInput,
     stepForward, stepBackward, resetStep, play, stop
   }
 })

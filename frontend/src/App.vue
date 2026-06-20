@@ -54,6 +54,10 @@
         </div>
       </div>
     </div>
+
+    <div class="px-4 pb-4">
+      <BatchTestPanel />
+    </div>
   </div>
 </template>
 
@@ -64,7 +68,11 @@ import RegexEditor from './components/RegexEditor.vue'
 import NfaVisualizer from './components/NfaVisualizer.vue'
 import MatchHighlight from './components/MatchHighlight.vue'
 import TemplateLibrary from './components/TemplateLibrary.vue'
+import BatchTestPanel from './components/BatchTestPanel.vue'
 
 const store = useRegexStore()
-onMounted(() => store.execute())
+onMounted(() => {
+  store.execute()
+  store.runBatch()
+})
 </script>

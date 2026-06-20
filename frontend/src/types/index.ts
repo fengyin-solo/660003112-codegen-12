@@ -55,3 +55,52 @@ export interface ASTNode {
   children?: ASTNode[]
   groupIndex?: number
 }
+
+export interface BatchTestItem {
+  id: number
+  text: string
+  expected: boolean | null
+  matched: boolean
+  matchText: string
+  groups: string[]
+  duration: number
+}
+
+export interface BatchGroupStat {
+  label: string
+  count: number
+  percent: number
+  color: string
+}
+
+export interface DetailedGroupStats {
+  matchedExpected: BatchTestItem[]
+  matchedUnexpected: BatchTestItem[]
+  unmatchedExpected: BatchTestItem[]
+  unmatchedUnexpected: BatchTestItem[]
+  noExpectationMatched: BatchTestItem[]
+  noExpectationUnmatched: BatchTestItem[]
+}
+
+export interface BatchTestResult {
+  items: BatchTestItem[]
+  total: number
+  matchedCount: number
+  unmatchedCount: number
+  hitRate: number
+  groups: BatchGroupStat[]
+  detailedGroups: BatchGroupStat[]
+  anomalies: BatchTestItem[]
+  falsePositives: BatchTestItem[]
+  falseNegatives: BatchTestItem[]
+  hasExpectations: boolean
+  accuracy: number
+  precision: number
+  recall: number
+  f1Score: number
+  truePositives: number
+  trueNegatives: number
+  falsePositiveCount: number
+  falseNegativeCount: number
+  detailedStats: DetailedGroupStats
+}
